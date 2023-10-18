@@ -1,4 +1,4 @@
-name: validate-packer-template
+name: validate-packer
 
 on:
   pull_request:
@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  validate-packer-template:
+  validate-packer:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,7 +18,7 @@ jobs:
           packer plugins install github.com/hashicorp/amazon
           packer version
 
-      - name: Validate Packer Template
+      - name: Validate Packer
         run: |
           packer validate ami.debian-packer-aws.pkr.hcl
 
