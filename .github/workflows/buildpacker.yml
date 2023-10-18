@@ -21,3 +21,9 @@ jobs:
       - name: Build AMI
         run: |
           packer build ami.debian-packer-aws.pkr.hcl
+          env:
+            AWS_REGION: us-east-1
+            SSH_USERNAME: admin
+            SUBNET_ID: subnet-025f87a6da259c0bd
+            AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+            AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
