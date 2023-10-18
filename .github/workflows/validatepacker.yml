@@ -15,9 +15,9 @@ jobs:
           packer plugins install github.com/hashicorp/amazon
           packer version
 
-      - name: Initialize Packer Plugins
-        run: |
-          packer init
+      # - name: Initialize Packer Plugins
+      #   run: |
+      #     packer init
 
       - name: Validate Packer Template
         run: |
