@@ -21,6 +21,7 @@ jobs:
         run: |
           packer plugins install github.com/hashicorp/amazon
           packer version
+          packer init
 
       - name: Build AMI
         run: |
