@@ -1,11 +1,9 @@
-name: Packer Template Validation
+name: validate-packer-template
 
 on:
   pull_request:
     branches:
       - main
-    paths:
-      - 'iac-pulumi/*'
 
 jobs:
   validate-packer-template:
@@ -30,4 +28,5 @@ jobs:
             echo "Packer template is not formatted correctly. Please format it using 'packer fmt' and commit the changes."
             exit 1
           fi
+
 
