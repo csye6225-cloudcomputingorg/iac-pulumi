@@ -10,6 +10,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v2
 
+      - name: Install packer plugin
+        run: packer init github.com/hashicorp/amazon
+
       - name: Validate Packer Template
         run: packer validate ami.debian-packer-aws.pkr.hcl
 
