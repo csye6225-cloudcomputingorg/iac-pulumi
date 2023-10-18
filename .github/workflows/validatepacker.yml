@@ -1,9 +1,6 @@
 name: Packer Template Validation
 
-on:
-  pull_request:
-    paths:
-      - 'ami.debian-packer-aws.pkr.hcl'
+on: [push]
 
 jobs:
   validate-packer-template:
