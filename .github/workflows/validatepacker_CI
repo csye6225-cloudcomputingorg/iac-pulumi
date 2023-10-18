@@ -1,0 +1,30 @@
+name: validate-packer-template
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate-packer-template:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Install Packer
+        run: |
+          packer plugins install github.com/hashicorp/amazon
+          packer version
+
+      - name: Validate Packer Template
+        run: |
+          packer validate ami.debian-packer-aws.pkr.hcl
+
+      - name: Check Formatting
+        run: |
+          if ! packer fmt -check=true ami.debian-packer-aws.pkr.hcl; then
+            echo "Packer template is not formatted correctly. Please format it using 'packer fmt' and commit the changes."
+            exit 1
+          fi
