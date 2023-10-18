@@ -2,19 +2,26 @@ name: Packer Template Validation
 
 on:
   pull_request:
-    paths:
-      - 'ami.debian-packer-aws.pkr.hcl'
+    types:
+      - opened
 
 jobs:
   validate-packer-template:
+    if: github.event.pull_request.head.repo.full_name == 'csye6225-cloudcomputingorg/iac-pulumi'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v2
 
+      - name: Install Packer
+        run: |
+          packer plugins install github.com/hashicorp/amazon
+          packer version
+
       - name: Validate Packer Template
-        run: packer validate ami.debian-packer-aws.pkr.hcl
+        run: |
+          packer validate ami.debian-packer-aws.pkr.hcl
 
       - name: Check Formatting
         run: |
