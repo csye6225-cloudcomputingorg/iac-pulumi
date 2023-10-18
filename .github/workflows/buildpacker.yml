@@ -29,3 +29,4 @@ jobs:
             AWS_REGION: us-east-1
             SSH_USERNAME: admin
             SUBNET_ID: subnet-025f87a6da259c0bd
+
