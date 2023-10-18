@@ -7,7 +7,6 @@ on:
 
 jobs:
   validate-packer-template:
-    if: github.event.pull_request.head.repo.full_name == 'csye6225-cloudcomputingorg/iac-pulumi'
     runs-on: ubuntu-latest
 
     steps:
