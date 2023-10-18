@@ -18,9 +18,9 @@ jobs:
           sudo mv packer /usr/local/bin/packer
           packer version
 
-      - name: Install Packer Plugin
+      - name: Initialize Packer Plugins
         run: |
-          packer init -get github.com/hashicorp/amazon
+          packer init
 
       - name: Validate Packer Template
         run: |
