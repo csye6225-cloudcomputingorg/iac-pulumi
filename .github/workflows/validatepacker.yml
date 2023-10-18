@@ -28,4 +28,3 @@ jobs:
             echo "Packer template is not formatted correctly. Please format it using 'packer fmt' and commit the changes."
             exit 1
           fi
-
