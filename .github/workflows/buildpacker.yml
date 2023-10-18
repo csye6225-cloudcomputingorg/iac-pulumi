@@ -1,0 +1,23 @@
+name: Build Packer Template
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-share-ami:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v2
+
+      - name: Install Packer
+        run: |
+          packer plugins install github.com/hashicorp/amazon
+          packer version
+
+      - name: Build AMI
+        run: |
+          packer build ami.debian-packer-aws.pkr.hcl
