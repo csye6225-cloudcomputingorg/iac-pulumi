@@ -2,8 +2,8 @@ name: Packer Template Validation
 
 on:
   pull_request:
-    types:
-      - opened
+    branches:
+      - main
 
 jobs:
   validate-packer-template:
