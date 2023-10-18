@@ -2,8 +2,10 @@ name: Packer Template Validation
 
 on:
   pull_request:
-    branches:
-      - main
+    paths:
+      - 'iac-pulumi/*'
+    types:
+      - opened
 
 jobs:
   validate-packer-template:
