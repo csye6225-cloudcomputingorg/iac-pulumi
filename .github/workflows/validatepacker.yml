@@ -1,31 +1,57 @@
-name: validate-packer-template
+name: webapp-CI
 
 on:
   pull_request:
     branches:
-      - main
+      - demo
 
 jobs:
-  validate-packer-template:
+  build:
+    name: webapp-ci
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v2
+    services:
+      mysql:
+        image: mysql:latest
+        env:
+          MYSQL_ROOT_PASSWORD: "prap@2602S"
+          MYSQL_DATABASE: "healthcare"
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
 
-      - name: Install Packer
+    strategy:
+      matrix:
+        node-version:
+          - 19.x
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Install nodemon
+        run: npm install nodemon
+
+      - name: Run Jest Tests
+        run: npm test
+
+      - name: Packer init
         run: |
-          packer plugins install github.com/hashicorp/amazon
-          packer version
+          packer init aws-debian.pkr.hcl
+
+      - name: Format Packer Template
+        run: |
+          packer fmt aws-debian.pkr.hcl
+          git diff --exit-code --quiet || exit 1
 
       - name: Validate Packer Template
-        run: |
-          packer validate ami.debian-packer-aws.pkr.hcl
-
-      - name: Check Formatting
-        run: |
-          if ! packer fmt -check=true ami.debian-packer-aws.pkr.hcl; then
-            echo "Packer template is not formatted correctly. Please format it using 'packer fmt' and commit the changes."
-            exit 1
-          fi
-
+        run: packer validate aws-debian.pkr.hcl
