@@ -7,24 +7,10 @@ on:
 
 jobs:
   validate-packer-template:
+    if: github.event.pull_request.head.repo.full_name == 'csye6225-cloudcomputingorg/iac-pulumi'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check if it's a pull request from a fork
-        run: |
-          if [ -n "$GITHUB_EVENT_PATH" ]; then
-            is_fork=$(jq -r '.pull_request.head.repo.fork' "$GITHUB_EVENT_PATH")
-            if [ "$is_fork" = "true" ]; then
-              echo "This is a pull request from a forked repository."
-              echo "Organization workflow will be executed."
-            else
-              echo "This is not a pull request from a forked repository."
-              echo "No further actions are needed."
-              exit 78 # Skip the workflow
-            fi
-          fi
-        shell: bash
-    
       - name: Checkout Code
         uses: actions/checkout@v2
 
