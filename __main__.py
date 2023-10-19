@@ -1,34 +1,23 @@
-"""An AWS Python Pulumi program"""
-
-# import pulumi
-# from pulumi_aws import s3
-
-# # Create an AWS resource (S3 Bucket)
-# bucket = s3.Bucket('my-bucket')
-
-# # Export the name of the bucket
-# pulumi.export('bucket_name', bucket.id)
-
 import boto3
 import os
-import json
-import pulumi
 import pulumi_aws as aws
-
+import pulumi
 from dotenv import load_dotenv
+from pulumi_aws import get_availability_zones
 
 load_dotenv()
 
-session = boto3.Session(
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.getenv("AWS_REGION")
-)
+aws_profile = "demo" 
+
+config = pulumi.Config("aws")
+region = config.require("region")
+
+session = boto3.Session(profile_name=aws_profile, region_name=region)
 
 def create_vpc(ec2):
     vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
     vpc.wait_until_available()
-    vpc.create_tags(Tags=[{"Key": "Name", "Value": "My_VPC"}])
+    vpc.create_tags(Tags=[{"Key": "Name", "Value": "WebAppVPC"}])
     return vpc
 
 def create_subnet(ec2, vpc, cidr_block, availability_zone, subnet_type):
@@ -49,19 +38,62 @@ def create_route_table(ec2, vpc, subnet_type):
 def create_route_to_igw(route_table, internet_gateway):
     route_table.create_route(DestinationCidrBlock='0.0.0.0/0', GatewayId=internet_gateway.id)
 
+
+def create_or_get_key_pair(ec2_client):
+    try:
+        # Try fetching an existing key pair
+        print('inside try')
+        response = ec2_client.describe_key_pairs(KeyNames=["my-keypair_demo"])
+        if response and response.get("KeyPairs"):
+            print('inside if')
+            return response["KeyPairs"][0]["KeyName"]
+    except:
+        pass
+
+    # If key pair doesn't exist, then create one using Boto3
+    new_key_pair = ec2_client.create_key_pair(KeyName="my-keypair_demo")
+    print("key pair doesn't exist")
+    key_material = new_key_pair["KeyMaterial"]
+    print('key material')
+    
+    key_file_path = os.path.abspath("my-keypair_demo.pem")
+    print('keyfile path')
+    with open(key_file_path, "w") as key_file:
+        print('open file')
+        key_file.write(key_material)
+    print(f"Key saved to: {key_file_path}")
+
+    # Ensure permissions of the .pem file are set correctly
+    os.chmod("my-keypair_demo.pem", 0o400)
+
+    # Use the public key from the new key pair with Pulumi's aws.ec2.KeyPair
+    pulumi_key_pair = aws.ec2.KeyPair("my-keypair_demo", public_key=new_key_pair["KeyMaterial"])
+    return pulumi_key_pair.key_name
+
+
+def fetch_ami_id(ec2_client):
+    owner_id = "547346458147"
+    filters = [{"Name": "owner-id", "Values": [owner_id]}]
+
+    response = ec2_client.describe_images(Filters=filters)
+
+    # Check if private AMIs were found.
+    if response.get("Images"):
+        ami_id = response["Images"][0]["ImageId"]
+        pulumi.export("private_ami_id", ami_id)
+        return ami_id
+    else:
+        raise Exception("Private AMI not found")
+
+
 def main():
     
-    # Read the AWS profile from the environment variable AWS_PROFILE
-    # aws_profile = os.environ.get("AWS_PROFILE", "default")
-
-    # Create the AWS provider using the AWS_PROFILE environment variable
-    # aws_provider = aws.Provider("my-aws-provider", profile=aws_profile)
-    
     ec2 = session.resource('ec2')
+    ec2_client = session.client('ec2')
 
     vpc = create_vpc(ec2)
 
-    availability_zones = ['us-east-1a', 'us-east-1b', 'us-east-1c']
+    availability_zones = get_availability_zones().names
     public_subnets = []
     private_subnets = []
     
@@ -118,6 +150,13 @@ def main():
         ),
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow Application",
+            from_port=3001,
+            to_port=3001,
+            protocol="tcp",
+            cidr_blocks=["0.0.0.0/0"]
+        ),
+        aws.ec2.SecurityGroupIngressArgs(
+            description="Allow Application",
             from_port=5000,
             to_port=5000,
             protocol="tcp",
@@ -137,25 +176,24 @@ def main():
             description=rule.description,
             type="ingress",
         )
-        
-    with open('manifest.json', 'r') as json_file:
-        manifest_data = json.load(json_file)
-        ami_details = manifest_data['builds'][0]['artifact_id']
 
-    print(ami_details.split(':')[1])
+    print(fetch_ami_id(ec2_client))
+    
+    key_name = create_or_get_key_pair(ec2_client)
+    
     ec2_instance = aws.ec2.Instance (
-        "my-ec2-instance",
+        "webapp-ec2-instance",
         instance_type = "t2.micro",
         vpc_security_group_ids = [application_security_group.id],
         subnet_id = public_subnets[0].id,
         associate_public_ip_address = True,
-        ami = ami_details.split(':')[1],  # Use the AMI ID from Packer
+        ami = fetch_ami_id(ec2_client),  # Use the AMI ID from Packer
+        key_name=key_name,
         tags = {
-            "Name": "MyEC2Instance",
+            "Name": "WebApp_EC2Instance",
         },
     )
-    
-    # pulumi.export('public_ip', ec2_instance.public_ip) //figure out later
+
 
 if __name__ == '__main__':
     main()
