@@ -15,7 +15,7 @@ region = config.require("region")
 session = boto3.Session(profile_name=aws_profile, region_name=region)
 
 def create_vpc(ec2):
-    vpc = ec2.create_vpc(CidrBlock='10.0.0.0/16')
+    vpc = ec2.create_vpc(CidrBlock=os.getenv("vpc_cidr_block"))
     vpc.wait_until_available()
     vpc.create_tags(Tags=[{"Key": "Name", "Value": "WebAppVPC"}])
     return vpc
@@ -36,7 +36,7 @@ def create_route_table(ec2, vpc, subnet_type):
     return route_table
 
 def create_route_to_igw(route_table, internet_gateway):
-    route_table.create_route(DestinationCidrBlock='0.0.0.0/0', GatewayId=internet_gateway.id)
+    route_table.create_route(DestinationCidrBlock=os.getenv("ig_cidr_block"), GatewayId=internet_gateway.id)
 
 
 def create_or_get_key_pair(ec2_client):
@@ -132,35 +132,35 @@ def main():
             from_port=22,
             to_port=22,
             protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"]
+            cidr_blocks=[os.getenv("ig_cidr_block")]
         ),
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow HTTP",
             from_port=80,
             to_port=80,
             protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"]
+            cidr_blocks=[os.getenv("ig_cidr_block")]
         ),
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow HTTPS",
             from_port=443,
             to_port=443,
             protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"]
+            cidr_blocks=[os.getenv("ig_cidr_block")]
         ),
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow Application",
             from_port=3001,
             to_port=3001,
             protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"]
+            cidr_blocks=[os.getenv("ig_cidr_block")]
         ),
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow Application",
             from_port=5000,
             to_port=5000,
             protocol="tcp",
-            cidr_blocks=["0.0.0.0/0"]
+            cidr_blocks=[os.getenv("ig_cidr_block")]
         )
     ]
 
