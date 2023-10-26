@@ -94,14 +94,14 @@ def create_rds_parameter_group():
 def create_rds_instance(db_security_group, db_parameter_group, private_subnets):
     rds_instance = rds.Instance("webapp-db",
         allocated_storage=20,
-        storage_type="gp2",
-        engine="mysql",
-        engine_version="8.0",
-        instance_class="db.t2.micro",  
-        db_name="csye6225",
+        storage_type=os.getenv("storage_type"),
+        engine=os.getenv("db_engine"),
+        engine_version=os.getenv("db_version"),
+        instance_class=os.getenv("db_instance_class"),  
+        db_name=os.getenv("db_name"),
         parameter_group_name=db_parameter_group.name,
-        password="Cloud2023",
-        username="csye6225",
+        password=os.getenv("db_password"),
+        username=os.getenv("db_username"),
         publicly_accessible=False,
         skip_final_snapshot=True,
         vpc_security_group_ids=[db_security_group.id],
@@ -114,7 +114,7 @@ def create_rds_instance(db_security_group, db_parameter_group, private_subnets):
 
 
 def fetch_ami_id(ec2_client):
-    owner_id = "547346458147"
+    owner_id = os.getenv("owner_id")
     filters = [{"Name": "owner-id", "Values": [owner_id]}]
 
     response = ec2_client.describe_images(Filters=filters)
@@ -307,7 +307,7 @@ def main():
 
     ec2_instance = aws.ec2.Instance (
         "webapp-ec2-instance",
-        instance_type = "t2.micro",
+        instance_type = os.getenv("ec2_instance_type"),
         vpc_security_group_ids = [application_security_group.id],
         subnet_id = public_subnets[0].id,
         associate_public_ip_address = True,
