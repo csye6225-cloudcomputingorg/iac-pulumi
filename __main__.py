@@ -326,6 +326,13 @@ def main():
         },
         )
 
+    dns_record = aws.route53.Record("webserver",
+    type="A",
+    ttl=300,
+    records=[ec2_instance.public_ip],
+    zone_id="Z06897291RHS0CSP8I3NG",
+    name="adityasrprakash.me"
+    )
 
     # Export the RDS endpoint
     pulumi.export("db_endpoint", rds_instance.endpoint)
