@@ -303,7 +303,106 @@ def main():
     rds_instance = create_rds_instance(db_security_group, db_parameter_group, private_subnets)
     
     print(rds_instance)
+    
+    # define IAM role
+    role = aws.iam.Role('CloudWatchAgentRole',
+        assume_role_policy="""{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+            "Action": "sts:AssumeRole",
+            "Principal": {
+                "Service": "ec2.amazonaws.com"
+            },
+            "Effect": "Allow",
+            "Sid": ""
+            }
+        ]
+        }"""
+    )
 
+    # define IAM policy
+    policy = aws.iam.Policy('CloudWatchPolicy',
+        description='My policy',
+        policy="""{
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "cloudwatch:PutMetricData",
+                    "ec2:DescribeVolumes",
+                    "ec2:DescribeTags",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogStreams",
+                    "logs:DescribeLogGroups",
+                    "logs:CreateLogStream",
+                    "logs:CreateLogGroup",
+                    "iam:CreateInstanceProfile",
+                    "iam:AddRoleToInstanceProfile"
+                ],
+                "Resource": "*"
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
+                    "ssm:GetParameter"
+                ],
+                "Resource": "arn:aws:ssm:::parameter/AmazonCloudWatch-*"
+            }
+        ]
+    }"""
+    )
+
+    # attach policy to role
+    role_policy_attachment = aws.iam.RolePolicyAttachment('RolePolicyAttachment',
+        role=role.name,
+        policy_arn=policy.arn
+    )
+    
+    
+    instance_profile = aws.iam.InstanceProfile("instanceProfile", role=role.name)
+    pulumi.export("instance_profile name", instance_profile.name)   
+
+    # # Define the name for your CloudWatch log group and log stream
+    # log_group_name = "csye6225"
+    # log_stream_name = "webapp"
+
+    # # Create a CloudWatch log group
+    # log_group = aws.cloudwatch.LogGroup(
+    #     f"{log_group_name}-log-group",
+    #     name=log_group_name,
+    #     retention_in_days=7,
+    # )
+
+    # # Create a log stream within the log group
+    # log_stream = aws.cloudwatch.LogStream(
+    #     f"{log_stream_name}-log-stream",
+    #     name=log_stream_name,
+    #     log_group_name=log_group.name,
+    # )
+
+    startup_script = """
+                                    
+            sudo chown csye6225:csye6225 -R /home/admin/webapp
+
+            sudo systemctl enable amazon-cloudwatch-agent.service
+            sudo systemctl start amazon-cloudwatch-agent.service
+            
+            sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config \
+            -m ec2 \
+            -c file:/home/admin/webapp/cloudwatch-config.json \
+            -s
+            
+            sudo systemctl restart amazon-cloudwatch-agent.service
+            
+            sudo systemctl daemon-reload
+            sudo systemctl enable webapp
+            sudo systemctl start webapp
+            sudo systemctl restart webapp
+        """
+    
 
     ec2_instance = aws.ec2.Instance (
         "webapp-ec2-instance",
@@ -311,14 +410,17 @@ def main():
         vpc_security_group_ids = [application_security_group.id],
         subnet_id = public_subnets[0].id,
         associate_public_ip_address = True,
+        iam_instance_profile=instance_profile,
         ami = fetch_ami_id(ec2_client),  # Use the AMI ID from Packer
         key_name=key_name,
-        user_data=pulumi.Output.all(rds_instance.endpoint, rds_instance.username, rds_instance.password).apply(
+        user_data=pulumi.Output.all(rds_instance.endpoint, rds_instance.username, rds_instance.password, startup_script).apply(
                     lambda args: f"""#!/bin/bash
                     export DB_HOST={args[0]}
                     export DB_NAME={args[1]}
                     export DB_USER={args[1]}
                     export DB_PASSWORD={args[2]}
+                    
+                    {args[3]}
                     """
                     ),
         tags = {
@@ -333,12 +435,17 @@ def main():
     zone_id="Z06897291RHS0CSP8I3NG",
     name="adityasrprakash.me"
     )
-
+    
+    
     # Export the RDS endpoint
     pulumi.export("db_endpoint", rds_instance.endpoint)
 
     # Export the EC2 instance's public IP
     pulumi.export("ec2_public_ip", ec2_instance.public_ip)    
+    
+    # Export the log group and log stream names
+    # pulumi.export("log_group_name", log_group.name)
+    # pulumi.export("log_stream_name", log_stream.name)
 
     
 if __name__ == '__main__':
