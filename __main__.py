@@ -2,9 +2,11 @@ import boto3
 import os
 import pulumi_aws as aws
 import pulumi
+import base64
 from pulumi_aws import rds
 from dotenv import load_dotenv
 from pulumi_aws import get_availability_zones
+from pulumi_aws import autoscaling, ec2, lb
 
 load_dotenv()
 
@@ -159,90 +161,109 @@ def main():
     private_route_table = create_route_table(ec2, vpc, "Private")
     for subnet in private_subnets:
         private_route_table.associate_with_subnet(SubnetId=subnet.id)
+    
+    #Load balancer Security Group
+    load_balancer_sg = aws.ec2.SecurityGroup('load_balancer_sg',
+    description='Enable access to the load balancer',
+    vpc_id=vpc.id,
+    ingress=[
+        aws.ec2.SecurityGroupIngressArgs(
+            description="Allow HTTP",
+            from_port=80,
+            to_port=80,
+            protocol='tcp',
+            cidr_blocks=[os.getenv("ig_cidr_block")],
+        ), 
+        aws.ec2.SecurityGroupIngressArgs(
+            description="Allow HTTPS",
+            from_port=443,
+            to_port=443,
+            protocol='tcp',
+            cidr_blocks=[os.getenv("ig_cidr_block")],
+        )
+    ],
+    egress=[
+        aws.ec2.SecurityGroupEgressArgs(
+            protocol="-1", # Allow all outbound protocols
+            from_port=0, 
+            to_port=0,
+            cidr_blocks=[os.getenv("ig_cidr_block")],
+        ),
+    ],
+)
         
     # Create an Application Security Group
     application_security_group = aws.ec2.SecurityGroup(
         "application-security-group",
         description="Security Group for EC2 instances hosting web applications",
-        vpc_id=vpc.id,  # Using the VPC created earlier
-    )
-
-    # Ingress rules to allow specific ports from anywhere
-    ingress_rules = [
+        vpc_id=vpc.id,
+        ingress = [
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow SSH",
             from_port=22,
             to_port=22,
             protocol="tcp",
-            cidr_blocks=[os.getenv("ig_cidr_block")]
-        ),
-        aws.ec2.SecurityGroupIngressArgs(
-            description="Allow HTTP",
-            from_port=80,
-            to_port=80,
-            protocol="tcp",
-            cidr_blocks=[os.getenv("ig_cidr_block")]
-        ),
-        aws.ec2.SecurityGroupIngressArgs(
-            description="Allow HTTPS",
-            from_port=443,
-            to_port=443,
-            protocol="tcp",
-            cidr_blocks=[os.getenv("ig_cidr_block")]
+            security_groups=[load_balancer_sg.id]
+            # cidr_blocks=[os.getenv("ig_cidr_block")]
         ),
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow Application",
             from_port=3001,
             to_port=3001,
             protocol="tcp",
-            cidr_blocks=[os.getenv("ig_cidr_block")]
+            security_groups=[load_balancer_sg.id]
+            # cidr_blocks=[os.getenv("ig_cidr_block")]
         ),
-        aws.ec2.SecurityGroupIngressArgs(
-            description="Allow Application",
-            from_port=5000,
-            to_port=5000,
-            protocol="tcp",
-            cidr_blocks=[os.getenv("ig_cidr_block")]
-        )
-    ]
-
-    # Apply the ingress rules to the security group
-    for rule in ingress_rules:
-        aws.ec2.SecurityGroupRule(
-            f"ingress-rule-{rule.from_port}-{rule.to_port}",
-            security_group_id=application_security_group.id,
-            from_port=rule.from_port,
-            to_port=rule.to_port,
-            protocol=rule.protocol,
-            cidr_blocks=rule.cidr_blocks,
-            description=rule.description,
-            type="ingress",
-        )
-
-    egress_rules = [
+    ],
+        egress = [
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow outbound traffic from the application",
             from_port=0,
-            to_port=65535,
-            protocol="tcp",
+            to_port=0,
+            protocol="-1",
             cidr_blocks=[os.getenv("ig_cidr_block")]
         ),
     ]
-    
-    # Apply the egress rules to the security group
-    for rule in egress_rules:
-        aws.ec2.SecurityGroupRule(
-            f"egress-rule-{rule.from_port}-{rule.to_port}",
-            security_group_id=application_security_group.id,
-            from_port=rule.from_port,
-            to_port=rule.to_port,
-            protocol=rule.protocol,
-            cidr_blocks=rule.cidr_blocks,
-            description=rule.description,
-            type="egress",
-        )    
-       
+    )     
 
+    # Create a Load Balancer
+    load_balancer = lb.LoadBalancer('app-load-balancer',
+    security_groups=[load_balancer_sg.id],
+    subnets=[public_subnets[0].id, public_subnets[1].id, public_subnets[2].id],
+    load_balancer_type="application",
+    internal=False,
+    enable_deletion_protection=False
+    )
+    
+    # Create a target group that listens on port 3001
+    target_group = lb.TargetGroup('target-group',
+        port=3001,
+        protocol='HTTP',
+        target_type='instance',
+        vpc_id=vpc.id,
+        health_check={
+            "enabled": True,
+            "port":"3001", 
+            "path": '/healthz',
+            "protocol": "HTTP",
+            "timeout": 3,
+            "healthy_threshold": 3,
+            "unhealthy_threshold": 3,
+            "interval": 30,
+        },
+    )
+    
+    # Then create a listener for the load balancer
+    listener = lb.Listener('http_listener',
+        load_balancer_arn=load_balancer.arn,
+        protocol="HTTP",
+        port=80,
+        default_actions=[{
+            'type': 'forward',
+            'target_group_arn': target_group.arn,
+        }]
+    )
+    
     print(fetch_ami_id(ec2_client))
     
     key_name = create_or_get_key_pair(ec2_client)
@@ -267,8 +288,8 @@ def main():
         aws.ec2.SecurityGroupIngressArgs(
             description="Allow outbound traffic from the application",
             from_port=0,
-            to_port=65535,
-            protocol="tcp",
+            to_port=0,
+            protocol="-1",
         ),
     ]
 
@@ -364,24 +385,6 @@ def main():
     instance_profile = aws.iam.InstanceProfile("instanceProfile", role=role.name)
     pulumi.export("instance_profile name", instance_profile.name)   
 
-    # # Define the name for your CloudWatch log group and log stream
-    # log_group_name = "csye6225"
-    # log_stream_name = "webapp"
-
-    # # Create a CloudWatch log group
-    # log_group = aws.cloudwatch.LogGroup(
-    #     f"{log_group_name}-log-group",
-    #     name=log_group_name,
-    #     retention_in_days=7,
-    # )
-
-    # # Create a log stream within the log group
-    # log_stream = aws.cloudwatch.LogStream(
-    #     f"{log_stream_name}-log-stream",
-    #     name=log_stream_name,
-    #     log_group_name=log_group.name,
-    # )
-
     startup_script = """
                                     
             sudo chown csye6225:csye6225 -R /home/admin/webapp
@@ -402,38 +405,117 @@ def main():
             sudo systemctl start webapp
             sudo systemctl restart webapp
         """
-    
 
-    ec2_instance = aws.ec2.Instance (
-        "webapp-ec2-instance",
-        instance_type = os.getenv("ec2_instance_type"),
-        vpc_security_group_ids = [application_security_group.id],
-        subnet_id = public_subnets[0].id,
-        associate_public_ip_address = True,
-        iam_instance_profile=instance_profile,
-        ami = fetch_ami_id(ec2_client),  # Use the AMI ID from Packer
+    # Form the user data script
+    user_data_script = pulumi.Output.all(rds_instance.endpoint, rds_instance.username, rds_instance.password, startup_script).apply(
+                        lambda args: f"""#!/bin/bash
+                        export DB_HOST={args[0]}
+                        export DB_NAME={args[1]}
+                        export DB_USER={args[1]}
+                        export DB_PASSWORD={args[2]}
+
+                        {args[3]}
+                        """
+                        )
+
+    # Encode the user data
+    user_data_base64 = pulumi.Output.from_input(user_data_script).apply(lambda v: base64.b64encode(v.encode('utf-8')).decode('utf-8'))
+
+
+    # Create a launch configuration
+    launch_template = aws.ec2.LaunchTemplate('webapp-launch-template',
+        image_id=fetch_ami_id(ec2_client),
+        instance_type=os.getenv("ec2_instance_type"),
         key_name=key_name,
-        user_data=pulumi.Output.all(rds_instance.endpoint, rds_instance.username, rds_instance.password, startup_script).apply(
-                    lambda args: f"""#!/bin/bash
-                    export DB_HOST={args[0]}
-                    export DB_NAME={args[1]}
-                    export DB_USER={args[1]}
-                    export DB_PASSWORD={args[2]}
-                    
-                    {args[3]}
-                    """
-                    ),
-        tags = {
-            "Name": "WebApp_EC2Instance",
+        # vpc_security_group_ids=[application_security_group.id],
+        network_interfaces=[{
+            "associatePublicIpAddress": True,
+            "subnetId": public_subnets[0].id,
+            "securityGroups": [application_security_group.id]
+        }],
+        iam_instance_profile={"name": instance_profile.name},
+        user_data=user_data_base64,
+    )
+
+    # Create an auto scaling group that refers to your launch configuration
+    auto_scaling_group = aws.autoscaling.Group('web-asg',
+        vpc_zone_identifiers=[public_subnets[0].id, public_subnets[1].id, public_subnets[2].id],
+        min_size=1, 
+        max_size=3, 
+        desired_capacity=1,
+        health_check_type='EC2',
+        health_check_grace_period=600,
+        force_delete=True,
+        termination_policies=['OldestInstance'],
+        target_group_arns=[target_group.arn],
+        launch_template=aws.autoscaling.GroupLaunchTemplateArgs(
+            id=launch_template.id,
+            version="$Latest",
+        ),
+        tags=[{"key": "Name", "value": "webapp-asg", "propagate_at_launch": True}]
+    )
+
+    # Create the scale up policy
+    scale_up_policy = aws.autoscaling.Policy("scaleup",
+        scaling_adjustment=1,
+        adjustment_type="ChangeInCapacity",
+        cooldown=300,
+        autoscaling_group_name=auto_scaling_group.name,
+    )
+
+    # Attach a CloudWatch metric that triggers the scale up policy
+    cpu_high_alarm = aws.cloudwatch.MetricAlarm("cpuHigh",
+        metric_name="CPUUtilization",
+        namespace="AWS/EC2",
+        comparison_operator="GreaterThanOrEqualToThreshold",
+        evaluation_periods=2,
+        period=60,
+        statistic="Average",
+        threshold="5",
+        alarm_actions=[scale_up_policy.arn],
+        dimensions={
+            "AutoScalingGroupName": auto_scaling_group.name,
         },
-        )
+    )
+
+    # Create the scale down policy
+    scale_down_policy = aws.autoscaling.Policy("scaledown",
+        scaling_adjustment=-1,
+        adjustment_type="ChangeInCapacity",
+        cooldown=300,
+        autoscaling_group_name=auto_scaling_group.name,
+    )
+
+    # Attach a CloudWatch metric that triggers the scale down policy
+    cpu_low_alarm = aws.cloudwatch.MetricAlarm("cpuLow",
+        metric_name="CPUUtilization",
+        namespace="AWS/EC2",
+        comparison_operator="LessThanOrEqualToThreshold",
+        evaluation_periods=2,
+        period=60,
+        statistic="Average",
+        threshold="3",
+        alarm_actions=[scale_down_policy.arn],
+        dimensions={
+            "AutoScalingGroupName": auto_scaling_group.name,
+        },
+    )
+
+
+    # Lookup the Route53 zone
+    zone_id = aws.route53.get_zone(name="demo.adityasrprakash.me").zone_id
 
     dns_record = aws.route53.Record("webserver",
     type="A",
-    ttl=300,
-    records=[ec2_instance.public_ip],
-    zone_id="Z06897291RHS0CSP8I3NG",
-    name="adityasrprakash.me"
+    zone_id=zone_id,
+    name="demo.adityasrprakash.me",
+    aliases=[
+        {
+            "name": load_balancer.dns_name,
+            "zone_id": load_balancer.zone_id,
+            "evaluate_target_health": True,
+        },
+    ]
     )
     
     
@@ -441,7 +523,7 @@ def main():
     pulumi.export("db_endpoint", rds_instance.endpoint)
 
     # Export the EC2 instance's public IP
-    pulumi.export("ec2_public_ip", ec2_instance.public_ip)    
+    # pulumi.export("ec2_public_ip", ec2_instance.public_ip)    
     
     # Export the log group and log stream names
     # pulumi.export("log_group_name", log_group.name)
