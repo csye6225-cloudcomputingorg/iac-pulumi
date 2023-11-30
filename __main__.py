@@ -1,12 +1,12 @@
 import boto3
 import os
 import pulumi_aws as aws
+import pulumi_gcp as gcp
 import pulumi
 import base64
 from pulumi_aws import rds
 from dotenv import load_dotenv
 from pulumi_aws import get_availability_zones
-from pulumi_aws import autoscaling, ec2, lb
 
 load_dotenv()
 
@@ -227,7 +227,7 @@ def main():
     )     
 
     # Create a Load Balancer
-    load_balancer = lb.LoadBalancer('app-load-balancer',
+    load_balancer = aws.lb.LoadBalancer('app-load-balancer',
     security_groups=[load_balancer_sg.id],
     subnets=[public_subnets[0].id, public_subnets[1].id, public_subnets[2].id],
     load_balancer_type="application",
@@ -236,7 +236,7 @@ def main():
     )
     
     # Create a target group that listens on port 3001
-    target_group = lb.TargetGroup('target-group',
+    target_group = aws.lb.TargetGroup('target-group',
         port=3001,
         protocol='HTTP',
         target_type='instance',
@@ -254,7 +254,7 @@ def main():
     )
     
     # Then create a listener for the load balancer
-    listener = lb.Listener('http_listener',
+    listener = aws.lb.Listener('http_listener',
         load_balancer_arn=load_balancer.arn,
         protocol="HTTP",
         port=80,
@@ -360,7 +360,8 @@ def main():
                     "logs:CreateLogStream",
                     "logs:CreateLogGroup",
                     "iam:CreateInstanceProfile",
-                    "iam:AddRoleToInstanceProfile"
+                    "iam:AddRoleToInstanceProfile",
+                    "sns:Publish"
                 ],
                 "Resource": "*"
             },
@@ -370,6 +371,20 @@ def main():
                     "ssm:GetParameter"
                 ],
                 "Resource": "arn:aws:ssm:::parameter/AmazonCloudWatch-*"
+            },
+            {
+                "Action": [
+                    "sns:Publish"
+                ],
+                "Effect": "Allow",
+                "Resource": "arn:aws:sns:us-east-1:404824748503:my-sns-topic-*"
+            },
+            {
+            "Effect": "Allow",
+            "Action": [
+                "lambda:InvokeFunction"
+            ],
+            "Resource": "arn:aws:lambda:us-east-1:404824748503:function:*"
             }
         ]
     }"""
@@ -381,6 +396,8 @@ def main():
         policy_arn=policy.arn
     )
     
+    # create a SNS Topic
+    sns_topic = aws.sns.Topic('my-sns-topic')
     
     instance_profile = aws.iam.InstanceProfile("instanceProfile", role=role.name)
     pulumi.export("instance_profile name", instance_profile.name)   
@@ -407,12 +424,14 @@ def main():
         """
 
     # Form the user data script
-    user_data_script = pulumi.Output.all(rds_instance.endpoint, rds_instance.username, rds_instance.password, startup_script).apply(
+    user_data_script = pulumi.Output.all(rds_instance.endpoint, rds_instance.username, rds_instance.password, startup_script, sns_topic.arn, region).apply(
                         lambda args: f"""#!/bin/bash
                         export DB_HOST={args[0]}
                         export DB_NAME={args[1]}
                         export DB_USER={args[1]}
                         export DB_PASSWORD={args[2]}
+                        export SNS_TOPIC_ARN={args[4]}
+                        export AWS_REGION={args[5]}
 
                         {args[3]}
                         """
@@ -518,7 +537,168 @@ def main():
     ]
     )
     
+    # Create Google Cloud Storage bucket, Google Service Account, and Access Keys for the Google Service Account.
+    # Initialize Google Cloud project and key location
+    project = pulumi.Config("gcp").require("project")
+
+    # Create a Google Cloud Storage bucket
+    gcs_bucket = gcp.storage.Bucket("submission-bucket", 
+                                    location="us-central1",
+                                    project=project,)
+
+    # Create a Google Service Account
+    service_account = gcp.serviceaccount.Account("my-webapp-account",
+                                                project=project,
+                                                account_id="my-webapp-account")
+
+    # Create Access Keys for the Google Service Account
+    service_account_key = gcp.serviceaccount.Key("my-key",
+                                        service_account_id=service_account.name,
+                                        public_key_type="TYPE_X509_PEM_FILE")
     
+    # Grant the service account the 'Storage Admin' role for the bucket
+    bucket_iam_member = gcp.storage.BucketIAMMember('my_bucket_iam_member',
+                                                    bucket=gcs_bucket.name,
+                                                    role='roles/storage.admin',
+                                                    member=pulumi.Output.concat('serviceAccount:', service_account.email))
+
+    # Export the bucket url and service account key
+    pulumi.export("bucket_url", gcs_bucket.url)
+    pulumi.export("service_account_key", service_account_key.private_key)
+    
+    # Create the Lambda Function and configure with Google Access Keys and bucket name
+    # Lambda Function Role
+    lambda_role = aws.iam.Role("lambda-exec-role",
+    assume_role_policy="""{
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Action": "sts:AssumeRole",
+                    "Effect": "Allow",
+                    "Principal": {
+                        "Service": "lambda.amazonaws.com"
+                    },
+                    "Sid": ""
+                }
+            ]
+        }""",
+    )
+    
+    # Attach the AWSLambdaBasicExecutionRole managed policy to the Lambda function role
+    aws.iam.RolePolicyAttachment('lambda-cloudwatch-policy-attachment',
+        role=lambda_role.name,
+        policy_arn='arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+    )
+
+    # Attach a custom policy for accessing Secrets Manager
+    aws.iam.RolePolicyAttachment(
+        'lambda-secrets-manager-policy-attachment',
+        role=lambda_role.name,
+        policy_arn='arn:aws:iam::aws:policy/SecretsManagerReadWrite'
+    )
+
+    # Provide email server configuration to Lambda Function including secrets
+    # Define the secret in AWS Secrets Manager
+    email_secret = aws.secretsmanager.Secret("email-secret")
+
+    # Define the Secret's version (this is where the actual secret value is stored)
+    email_secret_version = aws.secretsmanager.SecretVersion("email-secret-version",
+        secret_id=email_secret.id,
+        secret_string="{\"SMTP_SERVER\":\"smtp.mailgun.org\",\"SMTP_PORT\":\"587\",\"USERNAME\":\"csye6225@adityasrprakash.me\",\"PASSWORD\":\"Cloud2023\"}"
+    )
+
+
+    # Create DynamoDB instance for use by Lambda Function.
+    # Define DynamoDB table
+    # Create attributes
+    attribute_id = aws.dynamodb.TableAttributeArgs(name="Id", type="N")
+    attribute_email = aws.dynamodb.TableAttributeArgs(name="Email", type="S")
+    attribute_status = aws.dynamodb.TableAttributeArgs(name="Status", type="S")
+
+    # Create the DynamoDB table
+    dynamodb_table = aws.dynamodb.Table('emailTrackerTable',
+        attributes=[attribute_id, attribute_email, attribute_status],
+        hash_key="Id",
+        read_capacity=1,
+        write_capacity=1,
+        global_secondary_indexes=[
+            aws.dynamodb.TableGlobalSecondaryIndexArgs(
+                name='EmailStatusIndex',
+                hash_key='Email',
+                range_key='Status',
+                write_capacity=1,
+                read_capacity=1,
+                projection_type="ALL"
+            )
+        ]
+    )
+
+    # Grant the Lambda role the necessary trust so it can read from AWS Secrets Manager
+    lambda_role_policy = aws.iam.RolePolicy("lambdaRolePolicy",
+    role=lambda_role.id,
+    policy=pulumi.Output.all(dynamodb_table.arn, email_secret.arn).apply(lambda arns: f"""{{
+        "Version": "2012-10-17",
+        "Statement": [
+            {{"Action": ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"], "Effect": "Allow", "Resource": "{arns[0]}"}},
+            {{"Action": "secretsmanager:GetSecretValue", "Effect": "Allow", "Resource": "{arns[1]}"}}
+        ]
+    }}""")
+)
+
+    google_access_secret = aws.secretsmanager.Secret("google-access-secret")
+    secret_string='{"access_key": ${service_account_key.public_key}, "secret_key": ${service_account_key.private_key}}'
+    pulumi.export("SS", secret_string)
+    
+    google_secret_version = aws.secretsmanager.SecretVersion(
+        "GoogleAccessSecretVersion",
+        secret_id=google_access_secret.id,
+        secret_string=service_account_key.private_key
+        # secret_string='{"access_key": ${service_account_key.public_key}, "secret_key": ${service_account_key.private_key}}'
+    )
+
+    domain = "adityasrprakash.me"
+
+    mailgun_url = f"https://api.mailgun.net/v3/{domain}/messages"
+    mailgun_api_key = "4dc82ba6f91f8bbf597a3aeced3ef791-30b58138-ae50c84a"
+
+    # Define the AWS Lambda function
+    lambda_function = aws.lambda_.Function('my-lambda-function',
+        code=pulumi.AssetArchive({
+            '.': pulumi.FileArchive('C:/Users/18573/Desktop/serverless/venv/Lib/site-packages') 
+        }),
+        role=lambda_role.arn,
+        handler='index.lambda_handler',
+        runtime='python3.10',
+        timeout=40,
+        environment=aws.lambda_.FunctionEnvironmentArgs(
+            variables={
+                'GOOOGLE_PROJECT_ID': project,
+                'DYNAMODB_TABLE_NAME': dynamodb_table.name,
+                'GOOGLE_ACCESS_SECRET_ARN': google_access_secret.arn,
+                'BUCKET_NAME': gcs_bucket.name,
+                'EMAIL_SECRET_NAME': email_secret.name,
+                'SNS_TOPIC_ARN': sns_topic.arn,
+                'MAILGUN_API_URL': mailgun_url,
+                'MAILGUN_API_KEY': mailgun_api_key,
+            }
+        )
+    )
+    
+    # Subscribe the lambda to the SNS Topic
+    sns_subscription = aws.sns.TopicSubscription('snsTopicSub',
+                                                protocol="lambda",
+                                                endpoint=lambda_function.arn,
+                                                topic=sns_topic.id)
+
+    # Finally, we need to give permissions to SNS to invoke our lambda
+    sns_permission = aws.lambda_.Permission("snsPermission",
+                                            action="lambda:InvokeFunction",
+                                            function=lambda_function.name,
+                                            principal="sns.amazonaws.com",
+                                            source_arn=sns_topic.arn)
+    
+    pulumi.export('lambda_arn', lambda_function.arn)
+        
     # Export the RDS endpoint
     pulumi.export("db_endpoint", rds_instance.endpoint)
 
